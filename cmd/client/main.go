@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -101,7 +100,13 @@ func main() {
 
 	screenW, screenH := robotgo.GetScreenSize()
 	log.Printf("screen size %dx%d", screenW, screenH)
-	var remoteMode atomic.Bool
+
+	// vx, vy track our own virtual cursor position — same approach as the server.
+	// We don't rely on robotgo.GetMousePos() because it can be unreliable and
+	// robotgo.Move() requires Accessibility permission on macOS (grant it in
+	// System Settings → Privacy & Security → Accessibility).
+	vx, vy := screenW/2, screenH/2
+	remoteMode := false
 
 	for {
 		select {
@@ -121,27 +126,27 @@ func main() {
 				writeCh <- proto.Message{Type: proto.MsgHeartbeatPong}
 
 			case proto.MsgMouseEnter:
-				remoteMode.Store(true)
-				ex, ey := entryPos(side, screenW, screenH)
-				robotgo.Move(ex, ey)
-				log.Printf("mouse entered from server — placed at (%d,%d)", ex, ey)
+				remoteMode = true
+				vx, vy = entryPos(side, screenW, screenH)
+				robotgo.Move(vx, vy)
+				log.Printf("mouse entered from server — placed at (%d,%d)", vx, vy)
 
 			case proto.MsgMouseDelta:
-				if !remoteMode.Load() || len(m.Payload) < 4 {
+				if !remoteMode || len(m.Payload) < 4 {
 					continue
 				}
 				dx, dy := proto.DecodeMouseDelta(m.Payload)
-				cx, cy := robotgo.GetMousePos()
-				nx := clamp(cx+dx, 0, screenW-1)
-				ny := clamp(cy+dy, 0, screenH-1)
-				robotgo.Move(nx, ny)
-				dbg("delta (%+d,%+d) cur (%d,%d) → (%d,%d)", dx, dy, cx, cy, nx, ny)
+				vx = clamp(vx+dx, 0, screenW-1)
+				vy = clamp(vy+dy, 0, screenH-1)
+				robotgo.Move(vx, vy)
+				dbg("delta (%+d,%+d) → virtual (%d,%d)", dx, dy, vx, vy)
 
-				// Check if we've hit the return edge.
-				if atReturnEdge(nx, ny, side, screenW, screenH) {
-					remoteMode.Store(false)
+				// Use push-through return: when virtual pos is clamped at the
+				// return edge and another delta still pushes that way.
+				if atReturnEdge(vx, vy, dx, dy, side, screenW, screenH) {
+					remoteMode = false
 					writeCh <- proto.Message{Type: proto.MsgMouseLeave}
-					log.Printf("return edge hit at (%d,%d) — mouse back to server", nx, ny)
+					log.Printf("return edge — mouse back to server")
 				}
 
 			case proto.MsgBye:
@@ -168,17 +173,18 @@ func entryPos(side byte, w, h int) (x, y int) {
 	return w / 2, h / 2
 }
 
-// atReturnEdge checks if the cursor has hit the edge that leads back to the server.
-func atReturnEdge(x, y int, side byte, w, h int) bool {
+// atReturnEdge returns true when the virtual position is clamped at the return
+// edge and the incoming delta is still pushing toward it (push-through).
+func atReturnEdge(x, y, dx, dy int, side byte, w, h int) bool {
 	switch side {
-	case proto.SideRight:
-		return x <= 1
-	case proto.SideLeft:
-		return x >= w-2
-	case proto.SideTop:
-		return y >= h-2
-	case proto.SideBottom:
-		return y <= 1
+	case proto.SideRight: // entered from left → return when pushed back left
+		return x == 0 && dx < 0
+	case proto.SideLeft: // entered from right → return when pushed back right
+		return x == w-1 && dx > 0
+	case proto.SideTop: // entered from bottom → return when pushed back down
+		return y == h-1 && dy > 0
+	case proto.SideBottom: // entered from top → return when pushed back up
+		return y == 0 && dy < 0
 	}
 	return false
 }
