@@ -226,7 +226,11 @@ func handleClient(c net.Conn, mouse *evdev.Reader, keyboard *evdev.Reader, evCh 
 						if keyboard != nil {
 							if err := keyboard.Grab(); err != nil {
 								log.Printf("[%s] keyboard grab failed: %v", remote, err)
+							} else {
+								log.Printf("[%s] keyboard grabbed OK", remote)
 							}
+						} else {
+							log.Printf("[%s] no keyboard device -- forwarding disabled", remote)
 						}
 						// Use actual cursor position for accurate edge percentage;
 						// fall back to virtual position if xdotool is unavailable.
@@ -262,8 +266,10 @@ func handleClient(c net.Conn, mouse *evdev.Reader, keyboard *evdev.Reader, evCh 
 			}
 
 		case ev := <-kbCh:
+			if ev.Kind == evdev.KindKey {
+				log.Printf("[%s] kbCh key %d pressed=%v remoteMode=%v", remote, ev.Button, ev.Pressed, remoteMode)
+			}
 			if remoteMode && ev.Kind == evdev.KindKey {
-				dbg("key %d pressed=%v", ev.Button, ev.Pressed)
 				writeCh <- proto.Message{
 					Type:    proto.MsgKeyEvent,
 					Payload: proto.EncodeMouseButton(ev.Button, ev.Pressed),
