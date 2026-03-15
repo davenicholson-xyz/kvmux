@@ -17,7 +17,22 @@
             gopls
             gotools
             delve
+            gcc
           ];
+
+          # Native libs required by robotgo on Linux (X11 backend).
+          buildInputs = with pkgs; lib.optionals stdenv.isLinux [
+            libx11
+            libxtst
+            libxext
+            libxinerama
+            libxi
+            libpng
+          ];
+
+          shellHook = ''
+            export CGO_ENABLED=1
+          '';
         };
       }
     );

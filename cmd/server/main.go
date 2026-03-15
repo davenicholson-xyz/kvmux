@@ -7,8 +7,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/go-vgo/robotgo"
 
 	"kvm-bodge/internal/proto"
 )
@@ -26,7 +29,6 @@ func main() {
 
 	log.Printf("KVM server listening on %s", addr)
 
-	// Accept connections in the background; shut down on signal.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
@@ -35,7 +37,7 @@ func main() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
-				return // listener closed
+				return
 			}
 			connCh <- c
 		}
@@ -61,7 +63,6 @@ func handleClient(c net.Conn) {
 	}()
 
 	// --- Handshake ---
-	// 1. Send server hello.
 	if err := proto.Write(c, proto.Message{
 		Type:    proto.MsgHello,
 		Payload: []byte(proto.ServerHello),
@@ -69,45 +70,142 @@ func handleClient(c net.Conn) {
 		log.Printf("[%s] hello send: %v", remote, err)
 		return
 	}
-
-	// 2. Expect client hello.
 	msg, err := proto.Read(c)
-	if err != nil {
-		log.Printf("[%s] hello recv: %v", remote, err)
+	if err != nil || msg.Type != proto.MsgHello || string(msg.Payload) != proto.ClientHello {
+		log.Printf("[%s] bad hello", remote)
 		return
 	}
-	if msg.Type != proto.MsgHello || string(msg.Payload) != proto.ClientHello {
-		log.Printf("[%s] unexpected hello: type=%#x payload=%q", remote, msg.Type, msg.Payload)
+
+	// Receive client info (side).
+	msg, err = proto.Read(c)
+	if err != nil || msg.Type != proto.MsgClientInfo || len(msg.Payload) < 1 {
+		log.Printf("[%s] bad client info", remote)
 		return
 	}
-	log.Printf("[%s] handshake OK", remote)
-
-	// --- Heartbeat loop ---
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		// Send ping.
-		c.SetDeadline(time.Now().Add(5 * time.Second))
-		if err := proto.Write(c, proto.Message{Type: proto.MsgHeartbeatPing}); err != nil {
-			log.Printf("[%s] ping send: %v", remote, err)
-			return
-		}
-
-		// Expect pong.
-		resp, err := proto.Read(c)
-		if err != nil {
-			log.Printf("[%s] pong recv: %v", remote, err)
-			return
-		}
-		if resp.Type == proto.MsgBye {
-			log.Printf("[%s] client said bye", remote)
-			return
-		}
-		if resp.Type != proto.MsgHeartbeatPong {
-			log.Printf("[%s] unexpected message type %#x", remote, resp.Type)
-			return
-		}
-		log.Printf("[%s] heartbeat OK", remote)
+	side := msg.Payload[0]
+	sideNames := map[byte]string{
+		proto.SideLeft: "left", proto.SideRight: "right",
+		proto.SideTop: "top", proto.SideBottom: "bottom",
 	}
+	log.Printf("[%s] handshake OK — client is to the %s", remote, sideNames[side])
+
+	// --- Set up goroutines ---
+	writeCh := make(chan proto.Message, 128)
+	errCh := make(chan error, 4)
+
+	// Writer goroutine — serialises all writes to the connection.
+	go func() {
+		for msg := range writeCh {
+			if err := proto.Write(c, msg); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
+	// Reader goroutine.
+	inCh := make(chan proto.Message, 32)
+	go func() {
+		for {
+			m, err := proto.Read(c)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			inCh <- m
+		}
+	}()
+
+	// Mouse poller goroutine.
+	var remoteMode atomic.Bool
+	screenW, screenH := robotgo.GetScreenSize()
+	centerX, centerY := screenW/2, screenH/2
+
+	go func() {
+		ticker := time.NewTicker(8 * time.Millisecond) // ~120 Hz
+		defer ticker.Stop()
+		for range ticker.C {
+			x, y := robotgo.GetMousePos()
+			if !remoteMode.Load() {
+				if atEdge(x, y, side, screenW, screenH) {
+					remoteMode.Store(true)
+					log.Printf("[%s] mouse leaving to client", remote)
+					writeCh <- proto.Message{Type: proto.MsgMouseEnter}
+					robotgo.Move(centerX, centerY)
+				}
+			} else {
+				dx := x - centerX
+				dy := y - centerY
+				if dx != 0 || dy != 0 {
+					writeCh <- proto.Message{
+						Type:    proto.MsgMouseDelta,
+						Payload: proto.EncodeMouseDelta(dx, dy),
+					}
+					robotgo.Move(centerX, centerY)
+				}
+			}
+		}
+	}()
+
+	// Heartbeat ticker.
+	heartbeat := time.NewTicker(3 * time.Second)
+	defer heartbeat.Stop()
+
+	for {
+		select {
+		case err := <-errCh:
+			log.Printf("[%s] error: %v", remote, err)
+			return
+
+		case <-heartbeat.C:
+			writeCh <- proto.Message{Type: proto.MsgHeartbeatPing}
+
+		case m := <-inCh:
+			switch m.Type {
+			case proto.MsgHeartbeatPong:
+				// OK
+
+			case proto.MsgMouseLeave:
+				remoteMode.Store(false)
+				// Return mouse to the edge we were watching.
+				rx, ry := returnPos(side, screenW, screenH)
+				robotgo.Move(rx, ry)
+				log.Printf("[%s] mouse returned to server", remote)
+
+			case proto.MsgBye:
+				log.Printf("[%s] client said bye", remote)
+				return
+			}
+		}
+	}
+}
+
+// atEdge returns true when (x,y) is at the screen edge corresponding to the client's side.
+func atEdge(x, y int, side byte, w, h int) bool {
+	switch side {
+	case proto.SideRight:
+		return x >= w-2
+	case proto.SideLeft:
+		return x <= 1
+	case proto.SideTop:
+		return y <= 1
+	case proto.SideBottom:
+		return y >= h-2
+	}
+	return false
+}
+
+// returnPos gives a sensible mouse position on the server when control returns.
+func returnPos(side byte, w, h int) (x, y int) {
+	switch side {
+	case proto.SideRight:
+		return w - 10, h / 2
+	case proto.SideLeft:
+		return 10, h / 2
+	case proto.SideTop:
+		return w / 2, 10
+	case proto.SideBottom:
+		return w / 2, h - 10
+	}
+	return w / 2, h / 2
 }
