@@ -27,6 +27,7 @@ func main() {
 	server := flag.String("server", "", "server IP or host (required)")
 	port := flag.Int("port", 7777, "server port")
 	sideStr := flag.String("side", "", "which side of the server this monitor is on: left|right|top|bottom (required)")
+	scrollSpeed := flag.Int("scroll-speed", 5, "scroll wheel multiplier")
 	flag.BoolVar(&debug, "debug", false, "verbose debug output")
 	flag.Parse()
 
@@ -140,10 +141,10 @@ func main() {
 				vy = clamp(vy+dy, 0, screenH-1)
 				robotgo.Move(vx, vy)
 				if wv != 0 {
-					robotgo.Scroll(0, -wv) // evdev: positive=up; robotgo: positive=down
+					robotgo.Scroll(0, -wv**scrollSpeed)
 				}
 				if wh != 0 {
-					robotgo.Scroll(wh, 0)
+					robotgo.Scroll(wh**scrollSpeed, 0)
 				}
 				dbg("delta (%+d,%+d) scroll(%+d,%+d) → virtual (%d,%d)", dx, dy, wv, wh, vx, vy)
 
