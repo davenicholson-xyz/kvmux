@@ -4,9 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -26,24 +28,33 @@ func dbg(format string, args ...any) {
 func main() {
 	port := flag.Int("port", 7777, "TCP port to listen on")
 	input := flag.String("input", "", "evdev device path (default: auto-detect)")
-	screen := flag.String("screen", "", "screen resolution WxH override (default: auto-detect)")
+	screen := flag.String("screen", "", "logical screen resolution WxH override (default: auto-detect)")
+	scaleFlag := flag.Float64("scale", 0, "display scale factor override, e.g. 1.25 (default: auto-detect)")
 	flag.BoolVar(&debug, "debug", false, "verbose debug output")
 	flag.Parse()
 
-	// Screen size.
-	var screenW, screenH int
+	// Physical screen size.
+	var physW, physH int
 	if *screen != "" {
-		if _, err := fmt.Sscanf(*screen, "%dx%d", &screenW, &screenH); err != nil || screenW <= 0 || screenH <= 0 {
+		if _, err := fmt.Sscanf(*screen, "%dx%d", &physW, &physH); err != nil || physW <= 0 || physH <= 0 {
 			log.Fatalf("invalid --screen %q: want WxH e.g. 1920x1080", *screen)
 		}
 	} else {
 		var err error
-		screenW, screenH, err = detectScreenSize()
+		physW, physH, err = detectScreenSize()
 		if err != nil {
 			log.Fatalf("auto-detect screen size: %v\nHint: pass --screen WxH to set it manually", err)
 		}
 	}
-	log.Printf("screen size %dx%d", screenW, screenH)
+
+	// Scale factor → logical resolution.
+	scale := *scaleFlag
+	if scale <= 0 {
+		scale = detectScaleFactor()
+	}
+	screenW := int(math.Round(float64(physW) / scale))
+	screenH := int(math.Round(float64(physH) / scale))
+	log.Printf("physical %dx%d  scale %.2f  logical %dx%d", physW, physH, scale, screenW, screenH)
 
 	// Mouse device.
 	mouse, err := evdev.Open(*input)
@@ -88,12 +99,12 @@ func main() {
 			log.Println("shutting down")
 			return
 		case c := <-connCh:
-			handleClient(c, deltaCh, screenW, screenH)
+			handleClient(c, mouse, deltaCh, screenW, screenH)
 		}
 	}
 }
 
-func handleClient(c net.Conn, deltaCh <-chan evdev.Delta, screenW, screenH int) {
+func handleClient(c net.Conn, mouse *evdev.Reader, deltaCh <-chan evdev.Delta, screenW, screenH int) {
 	remote := c.RemoteAddr()
 	log.Printf("[%s] connected", remote)
 	defer func() {
@@ -174,6 +185,9 @@ func handleClient(c net.Conn, deltaCh <-chan evdev.Delta, screenW, screenH int) 
 
 				if triggered {
 					remoteMode = true
+					if err := mouse.Grab(); err != nil {
+						log.Printf("[%s] grab failed: %v", remote, err)
+					}
 					log.Printf("[%s] push-through at (%d,%d) — sending mouse to client", remote, vx, vy)
 					writeCh <- proto.Message{Type: proto.MsgMouseEnter}
 				}
@@ -192,6 +206,9 @@ func handleClient(c net.Conn, deltaCh <-chan evdev.Delta, screenW, screenH int) 
 
 			case proto.MsgMouseLeave:
 				remoteMode = false
+				if err := mouse.Ungrab(); err != nil {
+					log.Printf("[%s] ungrab failed: %v", remote, err)
+				}
 				vx, vy = returnVirtualPos(side, screenW, screenH)
 				log.Printf("[%s] mouse returned — virtual pos (%d,%d)", remote, vx, vy)
 
@@ -241,6 +258,49 @@ func clamp(v, lo, hi int) int {
 		return hi
 	}
 	return v
+}
+
+// detectScaleFactor tries to read the display scale from KDE kwinrc.
+// Falls back to 1.0 if nothing is found.
+func detectScaleFactor() float64 {
+	// When running under sudo, check the real user's config.
+	username := os.Getenv("SUDO_USER")
+	if username == "" {
+		username = os.Getenv("USER")
+	}
+	var homeDir string
+	if u, err := user.Lookup(username); err == nil {
+		homeDir = u.HomeDir
+	}
+	if homeDir == "" {
+		return 1.0
+	}
+
+	// KDE stores per-output scale in kwinrc under [Outputs][<name>] Scale=X
+	kwinrc := filepath.Join(homeDir, ".config", "kwinrc")
+	if scale, ok := parseScaleFromKwinrc(kwinrc); ok {
+		log.Printf("detected scale %.2f from %s", scale, kwinrc)
+		return scale
+	}
+
+	return 1.0
+}
+
+func parseScaleFromKwinrc(path string) (float64, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, false
+	}
+	// Scan all lines — Scale= can appear in [Xwayland], [Outputs][...], etc.
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Scale=") {
+			var scale float64
+			if _, err := fmt.Sscanf(strings.TrimPrefix(strings.TrimSpace(line), "Scale="), "%f", &scale); err == nil && scale > 0 {
+				return scale, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // detectScreenSize reads the first connected output's preferred mode from sysfs.

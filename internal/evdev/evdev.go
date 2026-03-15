@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 const (
@@ -57,6 +58,24 @@ func Open(device string) (*Reader, error) {
 
 func (r *Reader) Device() string { return r.device }
 func (r *Reader) Close()         { r.f.Close() }
+
+// eviocgrab = _IOW('E', 0x90, int) — exclusively grab/release the device.
+// While grabbed, the OS does not process the events (cursor won't move on server).
+const eviocgrab = 0x40044590
+
+func (r *Reader) Grab() error {
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, r.f.Fd(), eviocgrab, 1); errno != 0 {
+		return errno
+	}
+	return nil
+}
+
+func (r *Reader) Ungrab() error {
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, r.f.Fd(), eviocgrab, 0); errno != 0 {
+		return errno
+	}
+	return nil
+}
 
 // ReadEvents blocks, reading events and sending synced deltas to ch.
 // Returns on read error (e.g. device closed).
