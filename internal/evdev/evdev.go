@@ -165,7 +165,8 @@ func (r *Reader) ReadEvents(ch chan<- Event) error {
 				ev.Code == BtnSide || ev.Code == BtnExtra:
 				pendingBtns = append(pendingBtns, btnEvt{KindButton, ev.Code, ev.Value != 0})
 			case ev.Code < 0x100 && ev.Value != 2: // keyboard key; ignore auto-repeat
-				pendingBtns = append(pendingBtns, btnEvt{KindKey, ev.Code, ev.Value != 0})
+				// Emit immediately — no need to wait for EV_SYN.
+				ch <- Event{Kind: KindKey, Button: ev.Code, Pressed: ev.Value != 0}
 			}
 
 		case evSyn:
