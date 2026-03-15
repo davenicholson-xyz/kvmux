@@ -93,6 +93,15 @@ func main() {
 		}
 	}()
 
+	kbCh := make(chan evdev.Event, 256)
+	if keyboard != nil {
+		go func() {
+			if err := keyboard.ReadEvents(kbCh); err != nil {
+				log.Fatalf("evdev keyboard read: %v", err)
+			}
+		}()
+	}
+
 	connCh := make(chan net.Conn)
 	go func() {
 		for {
@@ -110,12 +119,12 @@ func main() {
 			log.Println("shutting down")
 			return
 		case c := <-connCh:
-			handleClient(c, mouse, keyboard, evCh, screenW, screenH)
+			handleClient(c, mouse, keyboard, evCh, kbCh, screenW, screenH)
 		}
 	}
 }
 
-func handleClient(c net.Conn, mouse *evdev.Reader, keyboard *evdev.Reader, evCh <-chan evdev.Event, screenW, screenH int) {
+func handleClient(c net.Conn, mouse *evdev.Reader, keyboard *evdev.Reader, evCh <-chan evdev.Event, kbCh <-chan evdev.Event, screenW, screenH int) {
 	remote := c.RemoteAddr()
 	log.Printf("[%s] connected", remote)
 	remoteMode := false
@@ -160,16 +169,6 @@ func handleClient(c net.Conn, mouse *evdev.Reader, keyboard *evdev.Reader, evCh 
 
 	writeCh := make(chan proto.Message, 128)
 	errCh := make(chan error, 4)
-
-	// Keyboard events channel — nil if no keyboard device.
-	kbCh := make(chan evdev.Event, 256)
-	if keyboard != nil {
-		go func() {
-			if err := keyboard.ReadEvents(kbCh); err != nil {
-				errCh <- err
-			}
-		}()
-	}
 
 	go func() {
 		for msg := range writeCh {

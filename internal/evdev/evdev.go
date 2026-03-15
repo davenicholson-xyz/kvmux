@@ -331,6 +331,7 @@ func findKeyboardFromProc() (string, error) {
 			return
 		}
 		var eventNode string
+		// Prefer devices with "keyboard" in name or "kbd" handler, but accept any match.
 		hasKbd := strings.Contains(strings.ToLower(name), "keyboard")
 		for _, h := range handlers {
 			if strings.HasPrefix(h, "event") {
@@ -340,10 +341,11 @@ func findKeyboardFromProc() (string, error) {
 				hasKbd = true
 			}
 		}
-		if eventNode == "" || !hasKbd {
+		if eventNode == "" {
 			return
 		}
-		if best == "" {
+		// Prefer explicit keyboard devices; fall back to any EV_KEY+EV_REP device.
+		if best == "" || hasKbd {
 			best = eventNode
 		}
 	}
