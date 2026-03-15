@@ -23,6 +23,7 @@ const (
 	MsgMouseEnter    MsgType = 0x07 // server→client: mouse control transferred
 	MsgMouseLeave    MsgType = 0x08 // client→server: return control to server
 	MsgMouseButton   MsgType = 0x09 // server→client: uint16 button, uint8 state
+	MsgKeyEvent      MsgType = 0x0A // server→client: uint16 keycode, uint8 state
 )
 
 const (

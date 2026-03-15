@@ -28,6 +28,7 @@ func dbg(format string, args ...any) {
 func main() {
 	port := flag.Int("port", 7777, "TCP port to listen on")
 	input := flag.String("input", "", "evdev device path (default: auto-detect)")
+	kbInput := flag.String("keyboard", "", "evdev keyboard device path (default: auto-detect)")
 	screen := flag.String("screen", "", "logical screen resolution WxH override (default: auto-detect)")
 	scaleFlag := flag.Float64("scale", 0, "display scale factor override, e.g. 1.25 (default: auto-detect)")
 	flag.BoolVar(&debug, "debug", false, "verbose debug output")
@@ -64,6 +65,16 @@ func main() {
 	defer mouse.Close()
 	log.Printf("reading mouse from %s", mouse.Device())
 
+	// Keyboard device (optional).
+	var keyboard *evdev.Reader
+	if kb, err := evdev.OpenKeyboard(*kbInput); err != nil {
+		log.Printf("keyboard not found: %v — keyboard forwarding disabled", err)
+	} else {
+		keyboard = kb
+		defer keyboard.Close()
+		log.Printf("reading keyboard from %s", keyboard.Device())
+	}
+
 	addr := fmt.Sprintf(":%d", *port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -99,12 +110,12 @@ func main() {
 			log.Println("shutting down")
 			return
 		case c := <-connCh:
-			handleClient(c, mouse, evCh, screenW, screenH)
+			handleClient(c, mouse, keyboard, evCh, screenW, screenH)
 		}
 	}
 }
 
-func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, screenW, screenH int) {
+func handleClient(c net.Conn, mouse *evdev.Reader, keyboard *evdev.Reader, evCh <-chan evdev.Event, screenW, screenH int) {
 	remote := c.RemoteAddr()
 	log.Printf("[%s] connected", remote)
 	remoteMode := false
@@ -114,7 +125,10 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 			if err := mouse.Ungrab(); err != nil {
 				log.Printf("[%s] ungrab on disconnect: %v", remote, err)
 			}
-			log.Printf("[%s] ungrabbed mouse on disconnect", remote)
+			if keyboard != nil {
+				keyboard.Ungrab()
+			}
+			log.Printf("[%s] ungrabbed devices on disconnect", remote)
 		}
 		log.Printf("[%s] disconnected", remote)
 	}()
@@ -145,7 +159,17 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 	log.Printf("[%s] handshake OK — client is to the %s", remote, sideNames[side])
 
 	writeCh := make(chan proto.Message, 128)
-	errCh := make(chan error, 2)
+	errCh := make(chan error, 4)
+
+	// Keyboard events channel — nil if no keyboard device.
+	kbCh := make(chan evdev.Event, 256)
+	if keyboard != nil {
+		go func() {
+			if err := keyboard.ReadEvents(kbCh); err != nil {
+				errCh <- err
+			}
+		}()
+	}
 
 	go func() {
 		for msg := range writeCh {
@@ -200,6 +224,11 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 						if err := mouse.Grab(); err != nil {
 							log.Printf("[%s] grab failed: %v", remote, err)
 						}
+						if keyboard != nil {
+							if err := keyboard.Grab(); err != nil {
+								log.Printf("[%s] keyboard grab failed: %v", remote, err)
+							}
+						}
 						// Use actual cursor position for accurate edge percentage;
 						// fall back to virtual position if xdotool is unavailable.
 						ex, ey := nx, ny
@@ -233,6 +262,15 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 				}
 			}
 
+		case ev := <-kbCh:
+			if remoteMode && ev.Kind == evdev.KindKey {
+				dbg("key %d pressed=%v", ev.Button, ev.Pressed)
+				writeCh <- proto.Message{
+					Type:    proto.MsgKeyEvent,
+					Payload: proto.EncodeMouseButton(ev.Button, ev.Pressed),
+				}
+			}
+
 		case m := <-inCh:
 			switch m.Type {
 			case proto.MsgHeartbeatPong:
@@ -242,6 +280,9 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 				remoteMode = false
 				if err := mouse.Ungrab(); err != nil {
 					log.Printf("[%s] ungrab failed: %v", remote, err)
+				}
+				if keyboard != nil {
+					keyboard.Ungrab()
 				}
 				if len(m.Payload) >= 2 {
 					pct := proto.DecodeEdgePos(m.Payload)

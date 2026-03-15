@@ -47,7 +47,8 @@ type Kind uint8
 
 const (
 	KindMove   Kind = 0 // cursor movement or scroll
-	KindButton Kind = 1 // button press or release
+	KindButton Kind = 1 // mouse button press or release
+	KindKey    Kind = 2 // keyboard key press or release
 )
 
 // Event is emitted by ReadEvents once per EV_SYN batch entry.
@@ -69,13 +70,29 @@ type Reader struct {
 	device string
 }
 
-// Open opens the given evdev device. Pass an empty string to auto-detect.
+// Open opens the given evdev device. Pass an empty string to auto-detect a mouse.
 func Open(device string) (*Reader, error) {
 	if device == "" {
 		var err error
 		device, err = findMouseDevice()
 		if err != nil {
 			return nil, fmt.Errorf("auto-detect mouse: %w", err)
+		}
+	}
+	f, err := os.Open(device)
+	if err != nil {
+		return nil, err
+	}
+	return &Reader{f: f, device: device}, nil
+}
+
+// OpenKeyboard opens the given evdev keyboard device. Pass an empty string to auto-detect.
+func OpenKeyboard(device string) (*Reader, error) {
+	if device == "" {
+		var err error
+		device, err = findKeyboardDevice()
+		if err != nil {
+			return nil, fmt.Errorf("auto-detect keyboard: %w", err)
 		}
 	}
 	f, err := os.Open(device)
@@ -113,6 +130,7 @@ func (r *Reader) ReadEvents(ch chan<- Event) error {
 	var ev inputEvent
 	var dx, dy, wv, wh int
 	type btnEvt struct {
+		kind    Kind
 		code    uint16
 		pressed bool
 	}
@@ -142,9 +160,12 @@ func (r *Reader) ReadEvents(ch chan<- Event) error {
 			}
 
 		case evKey:
-			switch ev.Code {
-			case BtnLeft, BtnRight, BtnMiddle, BtnSide, BtnExtra:
-				pendingBtns = append(pendingBtns, btnEvt{ev.Code, ev.Value != 0})
+			switch {
+			case ev.Code == BtnLeft || ev.Code == BtnRight || ev.Code == BtnMiddle ||
+				ev.Code == BtnSide || ev.Code == BtnExtra:
+				pendingBtns = append(pendingBtns, btnEvt{KindButton, ev.Code, ev.Value != 0})
+			case ev.Code < 0x100 && ev.Value != 2: // keyboard key; ignore auto-repeat
+				pendingBtns = append(pendingBtns, btnEvt{KindKey, ev.Code, ev.Value != 0})
 			}
 
 		case evSyn:
@@ -153,7 +174,7 @@ func (r *Reader) ReadEvents(ch chan<- Event) error {
 			}
 			// Emit button events first, in order.
 			for _, b := range pendingBtns {
-				ch <- Event{Kind: KindButton, Button: b.code, Pressed: b.pressed}
+				ch <- Event{Kind: b.kind, Button: b.code, Pressed: b.pressed}
 			}
 			pendingBtns = pendingBtns[:0]
 			// Emit movement/scroll if any.
@@ -273,4 +294,80 @@ func findMouseFromProc() (string, error) {
 		return "", fmt.Errorf("no mouse device found in /proc/bus/input/devices")
 	}
 	return best.event, nil
+}
+
+// findKeyboardDevice returns the most appropriate keyboard evdev path.
+func findKeyboardDevice() (string, error) {
+	if dev, err := globFirst("/dev/input/by-id/*-event-kbd"); err == nil {
+		return dev, nil
+	}
+	if dev, err := globFirst("/dev/input/by-path/*-event-kbd"); err == nil {
+		return dev, nil
+	}
+	return findKeyboardFromProc()
+}
+
+// evRep is the EV_REP event type bit — present on keyboards, absent on mice.
+const evRep = 0x14
+
+func findKeyboardFromProc() (string, error) {
+	data, err := os.ReadFile("/proc/bus/input/devices")
+	if err != nil {
+		return "", err
+	}
+
+	var evFlags uint64
+	var handlers []string
+	var name string
+	best := ""
+
+	flush := func() {
+		defer func() { evFlags = 0; handlers = nil; name = "" }()
+		// Keyboard: has EV_KEY and EV_REP, no EV_REL.
+		hasKey := evFlags&(1<<evKey) != 0
+		hasRep := evFlags&(1<<evRep) != 0
+		hasRel := evFlags&(1<<evRel) != 0
+		if !hasKey || !hasRep || hasRel {
+			return
+		}
+		var eventNode string
+		hasKbd := strings.Contains(strings.ToLower(name), "keyboard")
+		for _, h := range handlers {
+			if strings.HasPrefix(h, "event") {
+				eventNode = "/dev/input/" + h
+			}
+			if h == "kbd" {
+				hasKbd = true
+			}
+		}
+		if eventNode == "" || !hasKbd {
+			return
+		}
+		if best == "" {
+			best = eventNode
+		}
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			flush()
+			continue
+		}
+		if strings.HasPrefix(line, "N: Name=") {
+			name = strings.Trim(strings.TrimPrefix(line, "N: Name="), "\"")
+		}
+		if strings.HasPrefix(line, "B: EV=") {
+			fmt.Sscanf(strings.TrimPrefix(line, "B: EV="), "%x", &evFlags)
+		}
+		if strings.HasPrefix(line, "H: Handlers=") {
+			handlers = strings.Fields(strings.TrimPrefix(line, "H: Handlers="))
+		}
+	}
+	flush()
+
+	if best == "" {
+		return "", fmt.Errorf("no keyboard device found in /proc/bus/input/devices")
+	}
+	return best, nil
 }
