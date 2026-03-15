@@ -18,6 +18,7 @@
             gotools
             delve
             gcc
+            xdotool
           ];
 
           # Native libs required by robotgo on Linux (X11 backend).
@@ -28,6 +29,7 @@
             libxinerama
             libxi
             libpng
+            xdotool
           ];
 
           shellHook = ''

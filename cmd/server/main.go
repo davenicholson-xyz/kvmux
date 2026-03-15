@@ -168,11 +168,8 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 		}
 	}()
 
-	// Virtual cursor — tracks position from raw evdev deltas.
-	// Edge is triggered by "push-through": when the virtual position is already
-	// clamped at the boundary and the user keeps pushing in that direction.
-	// This is robust to any OS pointer speed/acceleration setting.
-	vx, vy := screenW/2, screenH/2
+	// Warp the OS cursor to a known position and seed the virtual tracker there.
+	vx, vy := warpMouseToCenter(screenW, screenH)
 	pressedButtons := map[uint16]bool{}
 
 	for {
@@ -299,6 +296,7 @@ func returnVirtualPosFromPct(side byte, w, h int, pct float64) (x, y int) {
 	}
 	return w / 2, h / 2
 }
+
 
 func returnVirtualPos(side byte, w, h int) (x, y int) {
 	switch side {
