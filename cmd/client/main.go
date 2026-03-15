@@ -132,21 +132,41 @@ func main() {
 				log.Printf("mouse entered from server — placed at (%d,%d)", vx, vy)
 
 			case proto.MsgMouseDelta:
-				if !remoteMode || len(m.Payload) < 4 {
+				if !remoteMode || len(m.Payload) < 8 {
 					continue
 				}
-				dx, dy := proto.DecodeMouseDelta(m.Payload)
+				dx, dy, wv, wh := proto.DecodeMouseDelta(m.Payload)
 				vx = clamp(vx+dx, 0, screenW-1)
 				vy = clamp(vy+dy, 0, screenH-1)
 				robotgo.Move(vx, vy)
-				dbg("delta (%+d,%+d) → virtual (%d,%d)", dx, dy, vx, vy)
+				if wv != 0 {
+					robotgo.Scroll(0, -wv) // evdev: positive=up; robotgo: positive=down
+				}
+				if wh != 0 {
+					robotgo.Scroll(wh, 0)
+				}
+				dbg("delta (%+d,%+d) scroll(%+d,%+d) → virtual (%d,%d)", dx, dy, wv, wh, vx, vy)
 
-				// Use push-through return: when virtual pos is clamped at the
-				// return edge and another delta still pushes that way.
 				if atReturnEdge(vx, vy, dx, dy, side, screenW, screenH) {
 					remoteMode = false
 					writeCh <- proto.Message{Type: proto.MsgMouseLeave}
 					log.Printf("return edge — mouse back to server")
+				}
+
+			case proto.MsgMouseButton:
+				if !remoteMode || len(m.Payload) < 3 {
+					continue
+				}
+				button, pressed := proto.DecodeMouseButton(m.Payload)
+				btn := evdevButtonToRobotgo(button)
+				if btn == "" {
+					continue
+				}
+				dbg("button %s pressed=%v", btn, pressed)
+				if pressed {
+					robotgo.MouseDown(btn)
+				} else {
+					robotgo.MouseUp(btn)
 				}
 
 			case proto.MsgBye:
@@ -187,6 +207,18 @@ func atReturnEdge(x, y, dx, dy int, side byte, w, h int) bool {
 		return y == 0 && dy < 0
 	}
 	return false
+}
+
+func evdevButtonToRobotgo(code uint16) string {
+	switch code {
+	case 0x110:
+		return "left"
+	case 0x111:
+		return "right"
+	case 0x112:
+		return "center"
+	}
+	return ""
 }
 
 func clamp(v, lo, hi int) int {

@@ -75,9 +75,9 @@ func main() {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 
-	deltaCh := make(chan evdev.Delta, 256)
+	evCh := make(chan evdev.Event, 256)
 	go func() {
-		if err := mouse.ReadEvents(deltaCh); err != nil {
+		if err := mouse.ReadEvents(evCh); err != nil {
 			log.Fatalf("evdev read: %v", err)
 		}
 	}()
@@ -99,12 +99,12 @@ func main() {
 			log.Println("shutting down")
 			return
 		case c := <-connCh:
-			handleClient(c, mouse, deltaCh, screenW, screenH)
+			handleClient(c, mouse, evCh, screenW, screenH)
 		}
 	}
 }
 
-func handleClient(c net.Conn, mouse *evdev.Reader, deltaCh <-chan evdev.Delta, screenW, screenH int) {
+func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, screenW, screenH int) {
 	remote := c.RemoteAddr()
 	log.Printf("[%s] connected", remote)
 	defer func() {
@@ -174,28 +174,38 @@ func handleClient(c net.Conn, mouse *evdev.Reader, deltaCh <-chan evdev.Delta, s
 			log.Printf("[%s] error: %v", remote, err)
 			return
 
-		case d := <-deltaCh:
-			if !remoteMode {
-				nx := clamp(vx+d.DX, 0, screenW-1)
-				ny := clamp(vy+d.DY, 0, screenH-1)
-				dbg("virtual (%d,%d) → (%d,%d) delta (%+d,%+d)", vx, vy, nx, ny, d.DX, d.DY)
-
-				triggered := pushThrough(vx, vy, d, side, screenW, screenH)
-				vx, vy = nx, ny
-
-				if triggered {
-					remoteMode = true
-					if err := mouse.Grab(); err != nil {
-						log.Printf("[%s] grab failed: %v", remote, err)
+		case ev := <-evCh:
+			switch ev.Kind {
+			case evdev.KindMove:
+				if !remoteMode {
+					nx := clamp(vx+ev.DX, 0, screenW-1)
+					ny := clamp(vy+ev.DY, 0, screenH-1)
+					dbg("virtual (%d,%d) → (%d,%d) delta (%+d,%+d)", vx, vy, nx, ny, ev.DX, ev.DY)
+					triggered := pushThrough(vx, vy, ev, side, screenW, screenH)
+					vx, vy = nx, ny
+					if triggered {
+						remoteMode = true
+						if err := mouse.Grab(); err != nil {
+							log.Printf("[%s] grab failed: %v", remote, err)
+						}
+						log.Printf("[%s] push-through — sending mouse to client", remote)
+						writeCh <- proto.Message{Type: proto.MsgMouseEnter}
 					}
-					log.Printf("[%s] push-through at (%d,%d) — sending mouse to client", remote, vx, vy)
-					writeCh <- proto.Message{Type: proto.MsgMouseEnter}
+				} else {
+					dbg("remote move (%+d,%+d) scroll(%+d,%+d)", ev.DX, ev.DY, ev.WheelV, ev.WheelH)
+					writeCh <- proto.Message{
+						Type:    proto.MsgMouseDelta,
+						Payload: proto.EncodeMouseDelta(ev.DX, ev.DY, ev.WheelV, ev.WheelH),
+					}
 				}
-			} else {
-				dbg("remote delta (%+d,%+d)", d.DX, d.DY)
-				writeCh <- proto.Message{
-					Type:    proto.MsgMouseDelta,
-					Payload: proto.EncodeMouseDelta(d.DX, d.DY),
+
+			case evdev.KindButton:
+				if remoteMode {
+					dbg("remote button %d pressed=%v", ev.Button, ev.Pressed)
+					writeCh <- proto.Message{
+						Type:    proto.MsgMouseButton,
+						Payload: proto.EncodeMouseButton(ev.Button, ev.Pressed),
+					}
 				}
 			}
 
@@ -222,16 +232,16 @@ func handleClient(c net.Conn, mouse *evdev.Reader, deltaCh <-chan evdev.Delta, s
 
 // pushThrough returns true when the virtual position was already at the edge
 // and the incoming delta is still pushing in that direction.
-func pushThrough(oldX, oldY int, d evdev.Delta, side byte, w, h int) bool {
+func pushThrough(oldX, oldY int, ev evdev.Event, side byte, w, h int) bool {
 	switch side {
 	case proto.SideRight:
-		return oldX == w-1 && d.DX > 0
+		return oldX == w-1 && ev.DX > 0
 	case proto.SideLeft:
-		return oldX == 0 && d.DX < 0
+		return oldX == 0 && ev.DX < 0
 	case proto.SideBottom:
-		return oldY == h-1 && d.DY > 0
+		return oldY == h-1 && ev.DY > 0
 	case proto.SideTop:
-		return oldY == 0 && d.DY < 0
+		return oldY == 0 && ev.DY < 0
 	}
 	return false
 }

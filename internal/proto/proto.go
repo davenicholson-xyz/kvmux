@@ -19,9 +19,10 @@ const (
 	MsgHeartbeatPong MsgType = 0x03
 	MsgBye           MsgType = 0x04
 	MsgClientInfo    MsgType = 0x05 // client→server: side byte
-	MsgMouseDelta    MsgType = 0x06 // server→client: int16 dx, int16 dy
+	MsgMouseDelta    MsgType = 0x06 // server→client: int16 dx, dy, wheelV, wheelH
 	MsgMouseEnter    MsgType = 0x07 // server→client: mouse control transferred
 	MsgMouseLeave    MsgType = 0x08 // client→server: return control to server
+	MsgMouseButton   MsgType = 0x09 // server→client: uint16 button, uint8 state
 )
 
 const (
@@ -84,17 +85,38 @@ func Read(r io.Reader) (Message, error) {
 	return Message{Type: msgType, Payload: payload}, nil
 }
 
-// EncodeMouseDelta packs dx, dy into a 4-byte payload (int16 each, big-endian).
-func EncodeMouseDelta(dx, dy int) []byte {
-	b := make([]byte, 4)
+// EncodeMouseDelta packs dx, dy, wheelV, wheelH into 8 bytes (int16 each, big-endian).
+func EncodeMouseDelta(dx, dy, wv, wh int) []byte {
+	b := make([]byte, 8)
 	binary.BigEndian.PutUint16(b[0:2], uint16(int16(dx)))
 	binary.BigEndian.PutUint16(b[2:4], uint16(int16(dy)))
+	binary.BigEndian.PutUint16(b[4:6], uint16(int16(wv)))
+	binary.BigEndian.PutUint16(b[6:8], uint16(int16(wh)))
 	return b
 }
 
-// DecodeMouseDelta unpacks a 4-byte payload into dx, dy.
-func DecodeMouseDelta(b []byte) (dx, dy int) {
+// DecodeMouseDelta unpacks an 8-byte payload into dx, dy, wheelV, wheelH.
+func DecodeMouseDelta(b []byte) (dx, dy, wv, wh int) {
 	dx = int(int16(binary.BigEndian.Uint16(b[0:2])))
 	dy = int(int16(binary.BigEndian.Uint16(b[2:4])))
+	wv = int(int16(binary.BigEndian.Uint16(b[4:6])))
+	wh = int(int16(binary.BigEndian.Uint16(b[6:8])))
+	return
+}
+
+// EncodeMouseButton packs a button code and pressed state into 3 bytes.
+func EncodeMouseButton(button uint16, pressed bool) []byte {
+	b := make([]byte, 3)
+	binary.BigEndian.PutUint16(b[0:2], button)
+	if pressed {
+		b[2] = 1
+	}
+	return b
+}
+
+// DecodeMouseButton unpacks a 3-byte payload into button code and pressed state.
+func DecodeMouseButton(b []byte) (button uint16, pressed bool) {
+	button = binary.BigEndian.Uint16(b[0:2])
+	pressed = b[2] != 0
 	return
 }

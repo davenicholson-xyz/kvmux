@@ -1,7 +1,7 @@
 //go:build linux
 
-// Package evdev reads raw relative mouse events from a Linux evdev device.
-// This works correctly under both X11 and Wayland.
+// Package evdev reads raw mouse events from a Linux evdev device.
+// Works correctly under both X11 and Wayland.
 package evdev
 
 import (
@@ -15,11 +15,22 @@ import (
 )
 
 const (
-	evSyn     = 0
-	evRel     = 2
+	evSyn  = 0
+	evKey  = 1
+	evRel  = 2
+
 	relX      = 0
 	relY      = 1
+	relWheel  = 8
+	relHWheel = 11
+
 	synReport = 0
+
+	BtnLeft   = 0x110
+	BtnRight  = 0x111
+	BtnMiddle = 0x112
+	BtnSide   = 0x113
+	BtnExtra  = 0x114
 )
 
 // inputEvent mirrors struct input_event from linux/input.h (64-bit layout).
@@ -31,8 +42,26 @@ type inputEvent struct {
 	Value int32
 }
 
-// Delta is a synchronised relative movement from one input_event batch.
-type Delta struct{ DX, DY int }
+// Kind distinguishes event types emitted by ReadEvents.
+type Kind uint8
+
+const (
+	KindMove   Kind = 0 // cursor movement or scroll
+	KindButton Kind = 1 // button press or release
+)
+
+// Event is emitted by ReadEvents once per EV_SYN batch entry.
+type Event struct {
+	Kind Kind
+
+	// KindMove
+	DX, DY         int
+	WheelV, WheelH int
+
+	// KindButton
+	Button  uint16
+	Pressed bool
+}
 
 // Reader reads events from an evdev device.
 type Reader struct {
@@ -59,8 +88,7 @@ func Open(device string) (*Reader, error) {
 func (r *Reader) Device() string { return r.device }
 func (r *Reader) Close()         { r.f.Close() }
 
-// eviocgrab = _IOW('E', 0x90, int) — exclusively grab/release the device.
-// While grabbed, the OS does not process the events (cursor won't move on server).
+// eviocgrab = _IOW('E', 0x90, int)
 const eviocgrab = 0x40044590
 
 func (r *Reader) Grab() error {
@@ -77,21 +105,29 @@ func (r *Reader) Ungrab() error {
 	return nil
 }
 
-// ReadEvents blocks, reading events and sending synced deltas to ch.
-// Returns on read error (e.g. device closed).
-func (r *Reader) ReadEvents(ch chan<- Delta) error {
-	log.Printf("evdev: reading from %s (struct size %d bytes)", r.device, binary.Size(inputEvent{}))
+// ReadEvents blocks, reading events and sending them to ch per EV_SYN batch.
+// Button events are emitted as individual KindButton events.
+// Movement/scroll is emitted as a single KindMove event at sync time.
+func (r *Reader) ReadEvents(ch chan<- Event) error {
+	log.Printf("evdev: reading from %s", r.device)
 	var ev inputEvent
-	var dx, dy int
+	var dx, dy, wv, wh int
+	type btnEvt struct {
+		code    uint16
+		pressed bool
+	}
+	var pendingBtns []btnEvt
 	first := true
+
 	for {
 		if err := binary.Read(r.f, binary.NativeEndian, &ev); err != nil {
 			return err
 		}
 		if first {
-			log.Printf("evdev: first event type=%d code=%d value=%d", ev.Type, ev.Code, ev.Value)
+			log.Printf("evdev: first raw event type=%d code=%d value=%d", ev.Type, ev.Code, ev.Value)
 			first = false
 		}
+
 		switch ev.Type {
 		case evRel:
 			switch ev.Code {
@@ -99,36 +135,44 @@ func (r *Reader) ReadEvents(ch chan<- Delta) error {
 				dx += int(ev.Value)
 			case relY:
 				dy += int(ev.Value)
+			case relWheel:
+				wv += int(ev.Value)
+			case relHWheel:
+				wh += int(ev.Value)
 			}
+
+		case evKey:
+			switch ev.Code {
+			case BtnLeft, BtnRight, BtnMiddle, BtnSide, BtnExtra:
+				pendingBtns = append(pendingBtns, btnEvt{ev.Code, ev.Value != 0})
+			}
+
 		case evSyn:
-			if ev.Code == synReport {
-				if dx != 0 || dy != 0 {
-					ch <- Delta{DX: dx, DY: dy}
-				}
-				dx, dy = 0, 0
+			if ev.Code != synReport {
+				continue
 			}
+			// Emit button events first, in order.
+			for _, b := range pendingBtns {
+				ch <- Event{Kind: KindButton, Button: b.code, Pressed: b.pressed}
+			}
+			pendingBtns = pendingBtns[:0]
+			// Emit movement/scroll if any.
+			if dx != 0 || dy != 0 || wv != 0 || wh != 0 {
+				ch <- Event{Kind: KindMove, DX: dx, DY: dy, WheelV: wv, WheelH: wh}
+			}
+			dx, dy, wv, wh = 0, 0, 0, 0
 		}
 	}
 }
 
 // findMouseDevice returns the most appropriate mouse evdev path.
-//
-// Strategy (in order):
-//  1. /dev/input/by-id/*-event-mouse  — stable USB ID symlinks, best choice
-//  2. /dev/input/by-path/*-event-mouse — stable path-based symlinks
-//  3. /proc/bus/input/devices scan    — fallback, picks device with EV_REL +
-//     REL_X + REL_Y that the kernel also registered as a mouseN node, and
-//     whose name does not contain "keyboard".
 func findMouseDevice() (string, error) {
-	// 1. by-id
 	if dev, err := globFirst("/dev/input/by-id/*-event-mouse"); err == nil {
 		return dev, nil
 	}
-	// 2. by-path
 	if dev, err := globFirst("/dev/input/by-path/*-event-mouse"); err == nil {
 		return dev, nil
 	}
-	// 3. /proc scan
 	return findMouseFromProc()
 }
 
@@ -147,8 +191,8 @@ func findMouseFromProc() (string, error) {
 	}
 
 	type candidate struct {
-		event      string
-		hasMouse   bool
+		event       string
+		hasMouse    bool
 		hasKeyboard bool
 	}
 
@@ -159,6 +203,17 @@ func findMouseFromProc() (string, error) {
 		name     string
 		best     *candidate
 	)
+
+	score := func(x *candidate) int {
+		s := 0
+		if x.hasMouse {
+			s += 2
+		}
+		if !x.hasKeyboard {
+			s++
+		}
+		return s
+	}
 
 	flush := func() {
 		defer func() { evFlags = 0; relFlags = 0; handlers = nil; name = "" }()
@@ -181,30 +236,14 @@ func findMouseFromProc() (string, error) {
 				hasKeyboard = true
 			}
 		}
-		nameLower := strings.ToLower(name)
-		if strings.Contains(nameLower, "keyboard") {
+		if strings.Contains(strings.ToLower(name), "keyboard") {
 			hasKeyboard = true
 		}
 		if eventNode == "" {
 			return
 		}
 		c := &candidate{event: eventNode, hasMouse: hasMouse, hasKeyboard: hasKeyboard}
-		if best == nil {
-			best = c
-			return
-		}
-		// Prefer: has mouse node, no keyboard association.
-		score := func(x *candidate) int {
-			s := 0
-			if x.hasMouse {
-				s += 2
-			}
-			if !x.hasKeyboard {
-				s++
-			}
-			return s
-		}
-		if score(c) > score(best) {
+		if best == nil || score(c) > score(best) {
 			best = c
 		}
 	}
