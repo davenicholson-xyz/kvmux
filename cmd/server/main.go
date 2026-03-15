@@ -173,6 +173,7 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 	// clamped at the boundary and the user keeps pushing in that direction.
 	// This is robust to any OS pointer speed/acceleration setting.
 	vx, vy := screenW/2, screenH/2
+	pressedButtons := map[uint16]bool{}
 
 	for {
 		select {
@@ -189,7 +190,8 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 					dbg("virtual (%d,%d) → (%d,%d) delta (%+d,%+d)", vx, vy, nx, ny, ev.DX, ev.DY)
 					triggered := pushThrough(vx, vy, ev, side, screenW, screenH)
 					vx, vy = nx, ny
-					if triggered {
+					// Don't switch screens while a button is held.
+					if triggered && len(pressedButtons) == 0 {
 						remoteMode = true
 						if err := mouse.Grab(); err != nil {
 							log.Printf("[%s] grab failed: %v", remote, err)
@@ -206,6 +208,11 @@ func handleClient(c net.Conn, mouse *evdev.Reader, evCh <-chan evdev.Event, scre
 				}
 
 			case evdev.KindButton:
+				if ev.Pressed {
+					pressedButtons[ev.Button] = true
+				} else {
+					delete(pressedButtons, ev.Button)
+				}
 				if remoteMode {
 					dbg("remote button %d pressed=%v", ev.Button, ev.Pressed)
 					writeCh <- proto.Message{

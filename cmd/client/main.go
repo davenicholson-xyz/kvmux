@@ -108,6 +108,7 @@ func main() {
 	// System Settings → Privacy & Security → Accessibility).
 	vx, vy := screenW/2, screenH/2
 	remoteMode := false
+	pressedButtons := map[uint16]bool{}
 
 	for {
 		select {
@@ -148,7 +149,7 @@ func main() {
 				}
 				dbg("delta (%+d,%+d) scroll(%+d,%+d) → virtual (%d,%d)", dx, dy, wv, wh, vx, vy)
 
-				if atReturnEdge(vx, vy, dx, dy, side, screenW, screenH) {
+				if atReturnEdge(vx, vy, dx, dy, side, screenW, screenH) && len(pressedButtons) == 0 {
 					remoteMode = false
 					writeCh <- proto.Message{Type: proto.MsgMouseLeave}
 					log.Printf("return edge — mouse back to server")
@@ -159,6 +160,11 @@ func main() {
 					continue
 				}
 				button, pressed := proto.DecodeMouseButton(m.Payload)
+				if pressed {
+					pressedButtons[button] = true
+				} else {
+					delete(pressedButtons, button)
+				}
 				btn := evdevButtonToRobotgo(button)
 				if btn == "" {
 					continue
