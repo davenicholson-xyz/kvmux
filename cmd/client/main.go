@@ -130,7 +130,7 @@ func main() {
 			case proto.MsgMouseEnter:
 				remoteMode = true
 				vx, vy = entryPos(side, screenW, screenH)
-				robotgo.Move(vx, vy)
+				moveMouse(vx, vy, false)
 				log.Printf("mouse entered from server — placed at (%d,%d)", vx, vy)
 
 			case proto.MsgMouseDelta:
@@ -140,7 +140,7 @@ func main() {
 				dx, dy, wv, wh := proto.DecodeMouseDelta(m.Payload)
 				vx = clamp(vx+dx, 0, screenW-1)
 				vy = clamp(vy+dy, 0, screenH-1)
-				robotgo.Move(vx, vy)
+				moveMouse(vx, vy, pressedButtons[0x110])
 				if wv != 0 {
 					robotgo.Scroll(0, -wv**scrollSpeed)
 				}
