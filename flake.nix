@@ -1,5 +1,5 @@
 {
-  description = "kvm-bodge — software KVM dev environment";
+  description = "kvmux — software KVM dev environment";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

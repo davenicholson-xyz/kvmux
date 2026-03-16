@@ -1,4 +1,4 @@
-module kvm-bodge
+module kvmux
 
 go 1.25.7
 

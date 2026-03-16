@@ -11,8 +11,8 @@ A software KVM (keyboard/video/mouse) switch in Go. The **server** runs on NixOS
 The dev environment is a Nix flake. Enter it with `nix develop` (or direnv if configured). `CGO_ENABLED=1` is required (set automatically by the flake's shellHook).
 
 ```bash
-go build ./cmd/server/   # Linux only (uses evdev, uinput)
-go build ./cmd/client/   # macOS or Linux
+go build ./cmd/kvmux-server/   # Linux only (uses evdev, uinput)
+go build ./cmd/kvmux-client/   # macOS or Linux
 ```
 
 There are no tests. `go vet ./...` is the only static check.
@@ -36,7 +36,7 @@ sudo ./server --screen 2560x1440 --scale 1.25             # override auto-detect
 ### Wire protocol (`internal/proto/proto.go`)
 Fixed 3-byte header: `[MsgType u8][payload_len u16 BE][payload]`. All messages go both ways except where noted. Key message types: `MsgMouseEnter/Leave` (control handoff), `MsgMouseDelta` (dx/dy/scroll), `MsgMouseButton`, `MsgKeyEvent`, `MsgHeartbeatPing/Pong`.
 
-### Server (`cmd/server/`)
+### Server (`cmd/kvmux-server/`)
 Single-client, synchronous. `main()` opens the mouse and all detected keyboard evdev devices, starts one goroutine per device writing to `evCh` / `kbCh` channels, then calls `handleClient()` which blocks until the client disconnects.
 
 **Edge detection** uses a virtual cursor (`vx`, `vy`) that tracks relative mouse deltas. "Push-through" fires when `vx`/`vy` is already clamped at the configured edge and another delta arrives in the same direction. On trigger: `EVIOCGRAB` both mouse and all keyboard fds (exclusive kernel grab — compositor/X stops seeing events), send `MsgMouseEnter` to client.
@@ -47,7 +47,7 @@ Single-client, synchronous. `main()` opens the mouse and all detected keyboard e
 
 **Platform files**: `warp_linux.go` contains `warpMouseToCenter` (xdotool first, falls back to uinput corner-slam), `readCursorPos`, and `findDisplayEnv`.
 
-### Client (`cmd/client/`)
+### Client (`cmd/kvmux-client/`)
 Receives events from server and injects them locally. Mouse injection is platform-split: `mouse_darwin.go` uses CGo + CoreGraphics (`kvmMoveMouse`) sending `kCGEventLeftMouseDragged` vs `kCGEventMouseMoved` depending on button state. `mouse_linux.go` uses robotgo.
 
 **Return-to-server**: client tracks its own virtual cursor. When it hits the opposite edge from entry and another delta pushes further, it sends `MsgMouseLeave` back to the server. Both sides encode the Y% (for left/right edges) or X% (for top/bottom edges) as a uint16 so the cursor appears at the same relative position on the new screen.

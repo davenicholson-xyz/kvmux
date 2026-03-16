@@ -13,8 +13,8 @@ import (
 	"strings"
 	"syscall"
 
-	"kvm-bodge/internal/evdev"
-	"kvm-bodge/internal/proto"
+	"kvmux/internal/evdev"
+	"kvmux/internal/proto"
 )
 
 var debug bool
