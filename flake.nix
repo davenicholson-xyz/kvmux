@@ -11,6 +11,17 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
       in {
+        packages.default = pkgs.buildGoModule {
+          pname = "kvmux-server";
+          version = "0.1.0";
+          src = ./.;
+          subPackages = [ "cmd/kvmux-server" ];
+          vendorHash = nixpkgs.lib.fakeHash;
+          CGO_ENABLED = "1";
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = with pkgs; [ libx11 libxtst libxext libxinerama libxi libpng ];
+        };
+
         devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             go
