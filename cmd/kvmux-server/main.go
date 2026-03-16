@@ -13,8 +13,8 @@ import (
 	"strings"
 	"syscall"
 
-	"kvmux/internal/evdev"
-	"kvmux/internal/proto"
+	"github.com/davenicholson-xyz/kvmux/internal/evdev"
+	"github.com/davenicholson-xyz/kvmux/internal/proto"
 )
 
 var debug bool

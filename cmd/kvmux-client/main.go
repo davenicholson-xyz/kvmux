@@ -12,7 +12,7 @@ import (
 
 	"github.com/go-vgo/robotgo"
 
-	"kvmux/internal/proto"
+	"github.com/davenicholson-xyz/kvmux/internal/proto"
 )
 
 var debug bool
