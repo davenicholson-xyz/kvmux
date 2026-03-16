@@ -27,7 +27,7 @@ func main() {
 	server := flag.String("server", "", "server IP or host (required)")
 	port := flag.Int("port", 7777, "server port")
 	sideStr := flag.String("side", "", "which side of the server this monitor is on: left|right|top|bottom (required)")
-	scrollSpeed := flag.Int("scroll-speed", 5, "scroll wheel multiplier")
+	scrollSpeed := flag.Int("scroll-speed", 50, "scroll wheel multiplier")
 	flag.BoolVar(&debug, "debug", false, "verbose debug output")
 	flag.Parse()
 
@@ -366,9 +366,9 @@ func linuxKeyToRobotgo(code uint16) string {
 		return "0"
 	// Punctuation
 	case 12:
-		return "minus"
+		return "-"
 	case 13:
-		return "equal"
+		return "="
 	case 26:
 		return "["
 	case 27:
@@ -493,7 +493,7 @@ func linuxKeyToRobotgo(code uint16) string {
 	case 69:
 		return "num_lock"
 	case 70:
-		return "scrolllock"
+		return "" // no robotgo mapping
 	}
 	return ""
 }
