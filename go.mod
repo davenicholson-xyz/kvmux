@@ -1,4 +1,4 @@
-module kvmux
+module github.com/davenicholson-xyz/kvmux
 
 go 1.25.7
 
