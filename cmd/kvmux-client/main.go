@@ -24,15 +24,18 @@ func dbg(format string, args ...any) {
 }
 
 func main() {
-	server := flag.String("server", "", "server IP or host (required)")
+	cfg := loadConfig()
+
+	server := flag.String("server", cfg.Server, "server IP or host")
 	port := flag.Int("port", 7777, "server port")
-	sideStr := flag.String("side", "", "which side of the server this monitor is on: left|right|top|bottom (required)")
+	sideStr := flag.String("side", cfg.Side, "which side of the server this monitor is on: left|right|top|bottom")
 	scrollSpeed := flag.Int("scroll-speed", 50, "scroll wheel multiplier")
 	flag.BoolVar(&debug, "debug", false, "verbose debug output")
 	flag.Parse()
 
 	if *server == "" || *sideStr == "" {
-		fmt.Fprintln(os.Stderr, "usage: client --server <ip> --side <left|right|top|bottom> [--port <port>]")
+		fmt.Fprintln(os.Stderr, "usage: kvmux-client --server <ip> --side <left|right|top|bottom>")
+		fmt.Fprintln(os.Stderr, "       or set server/side in config.toml or ~/.config/kvmux/config.toml")
 		os.Exit(1)
 	}
 
