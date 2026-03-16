@@ -395,7 +395,7 @@ func linuxKeyToRobotgo(code uint16) string {
 	case 15:
 		return "tab"
 	case 28:
-		return "return"
+		return "enter"
 	case 57:
 		return "space"
 	case 58:
@@ -485,13 +485,13 @@ func linuxKeyToRobotgo(code uint16) string {
 	case 83:
 		return "num."
 	case 96:
-		return "numenter"
+		return "num_enter"
 	case 98:
 		return "num/"
 	case 55:
 		return "num*"
 	case 69:
-		return "numlock"
+		return "num_lock"
 	case 70:
 		return "scrolllock"
 	}
