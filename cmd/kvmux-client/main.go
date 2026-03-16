@@ -184,16 +184,8 @@ func main() {
 				} else {
 					delete(pressedButtons, button)
 				}
-				btn := evdevButtonToRobotgo(button)
-				if btn == "" {
-					continue
-				}
-				dbg("button %s pressed=%v", btn, pressed)
-				if pressed {
-					robotgo.MouseDown(btn)
-				} else {
-					robotgo.MouseUp(btn)
-				}
+				dbg("button %d pressed=%v", button, pressed)
+				mouseButton(button, pressed, vx, vy)
 
 			case proto.MsgKeyEvent:
 				if !remoteMode || len(m.Payload) < 3 {
