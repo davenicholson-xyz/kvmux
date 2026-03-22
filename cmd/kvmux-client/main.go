@@ -81,6 +81,8 @@ func main() {
 	}
 	log.Printf("handshake OK — connected to %s", addr)
 
+	startSleepWatcher()
+
 	// --- Set up goroutines ---
 	writeCh := make(chan proto.Message, 128)
 	errCh := make(chan error, 4)
@@ -128,6 +130,16 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 			log.Println("bye")
 			return
+
+		case <-sleepCh:
+			log.Println("system sleep — returning mouse to server")
+			if remoteMode {
+				remoteMode = false
+				releaseAllKeys(pressedKeys)
+				clear(pressedButtons)
+				pct := edgePosPct(vx, vy, side, screenW, screenH)
+				writeCh <- proto.Message{Type: proto.MsgMouseLeave, Payload: proto.EncodeEdgePos(pct)}
+			}
 
 		case err := <-errCh:
 			log.Printf("error: %v", err)
